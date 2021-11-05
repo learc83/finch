@@ -786,6 +786,82 @@ defmodule FinchTest do
     end
   end
 
+  describe "request-transformer" do
+    test "adds headers to request", %{bypass: bypass} do
+      defmodule HeaderInjector do
+        @behaviour Finch.RequestTransformer
+
+        def transform(request, _name, _opts) do
+          %{request | headers: [{"injected-header", "123"} | request.headers]}
+        end
+      end
+
+      start_supervised!({Finch, name: MyFinch, request_transformer: HeaderInjector})
+
+      Bypass.expect_once(bypass, "GET", "/", fn conn ->
+        assert Enum.member?(conn.req_headers, {"injected-header", "123"})
+        assert Enum.member?(conn.req_headers, {"build-header", "abc"})
+        Plug.Conn.send_resp(conn, 200, "OK")
+      end)
+
+      assert {:ok, %{status: 200}} =
+               Finch.build(:get, endpoint(bypass), [{"build-header", "abc"}])
+               |> Finch.request(MyFinch)
+    end
+
+    test "accepts opts", %{bypass: bypass} do
+      defmodule ConditionalHeaderInjector do
+        @behaviour Finch.RequestTransformer
+
+        def transform(request, _name, opts) do
+          if opts[:dont_inject_headers] do
+            request
+          else
+            %{request | headers: [{"injected-header", "123"} | request.headers]}
+          end
+        end
+      end
+
+      start_supervised!({Finch, name: MyFinch, request_transformer: ConditionalHeaderInjector})
+
+      Bypass.expect_once(bypass, "GET", "/", fn conn ->
+        assert !Enum.member?(conn.req_headers, {"injected-header", "123"})
+        Plug.Conn.send_resp(conn, 200, "OK")
+      end)
+
+      assert {:ok, %{status: 200}} =
+               Finch.build(:get, endpoint(bypass))
+               |> Finch.request(MyFinch, dont_inject_headers: true)
+    end
+
+    test "accepts name", %{bypass: bypass} do
+      defmodule NameConditionalHeaderInjector do
+        @behaviour Finch.RequestTransformer
+
+        def transform(request, name, _opts) do
+          if name == ServiceAFinch do
+            %{request | headers: [{"injected-header", "A"} | request.headers]}
+          else
+            request
+          end
+        end
+      end
+
+      start_supervised!(
+        {Finch, name: ServiceAFinch, request_transformer: NameConditionalHeaderInjector}
+      )
+
+      Bypass.expect_once(bypass, "GET", "/", fn conn ->
+        assert Enum.member?(conn.req_headers, {"injected-header", "A"})
+        Plug.Conn.send_resp(conn, 200, "OK")
+      end)
+
+      assert {:ok, %{status: 200}} =
+               Finch.build(:get, endpoint(bypass))
+               |> Finch.request(ServiceAFinch)
+    end
+  end
+
   defp get_pools(name, shp) do
     Registry.lookup(name, shp)
   end
